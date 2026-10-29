@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Social Agent Engine · Prototype</title>
+  <style>
+    :root { font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #e9eef8; background: #0c1220; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; }
+    main { max-width: 840px; padding: 28px 20px; margin: auto; }
+    h1 { font-size: 28px; margin: 0 0 8px; }
+    small, .muted { color: #a2b2ca; }
+    header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 22px; }
+    .badge { border: 1px solid #34568b; border-radius: 99px; padding: 5px 11px; color: #a3c8ff; font-size: 12px; }
+    .panel { background: #141e30; border: 1px solid #24354c; padding: 16px; border-radius: 14px; margin-bottom: 16px; }
+    .fields { display: flex; flex-wrap: wrap; gap: 10px; }
+    label { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+    input, select, button { padding: 10px 11px; background: #0b1424; border: 1px solid #36506e; color: #f4f7fd; border-radius: 9px; }
+    input[type="text"], input[type="password"] { min-width: 125px; max-width: 220px; }
+    input[type="checkbox"] { accent-color: #5b9cfc; }
+    button { cursor: pointer; background: #254c8b; border-color: #3767ad; }
+    button:hover { background: #3264b1; }
+    button:disabled { opacity: .5; cursor: wait; }
+    .danger { background: #702b37; border-color: #884052; }
+    #messages { height: min(56vh, 520px); overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding: 3px; }
+    .message { max-width: 88%; padding: 12px 14px; border-radius: 14px; white-space: pre-wrap; line-height: 1.55; word-break: break-word; }
+    .user { align-self: flex-end; background: #284777; }
+    .assistant { align-self: flex-start; background: #263449; }
+    #composer { display: flex; gap: 8px; }
+    #prompt { flex: 1; min-width: 0; max-width: unset; }
+    .footnote { font-size: 12px; margin-top: 12px; }
+    #metrics { min-height: 20px; font-family: ui-monospace, SFMono-Regular, monospace; }
+    .hint { margin: 10px 0; }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div><h1>Social Agent Engine</h1><small>Memory-aware conversational agent · interview prototype</small></div>
+    <span class="badge" id="backend">Checking backend...</span>
+  </header>
+  <section class="panel fields">
+    <label>User <input id="user" type="text" value="demo_user" maxlength="64" /></label>
+    <label>Thread <input id="thread" type="text" value="demo_thread" maxlength="64" /></label>
+    <label>Memory mode
+      <select id="mode"><option value="dual">Dual memory</option><option value="window">Window only</option><option value="off">No context</option></select>
+    </label>
+    <label>Opt-in memory <input id="consent" type="checkbox" /></label>
+    <label>API key <input id="apikey" type="password" autocomplete="off" placeholder="optional (local)" /></label>
+    <button id="showMemory">Show memories</button>
+    <button id="erase" class="danger">Delete user data</button>
+  </section>
+  <section class="panel">
+    <div id="messages" aria-live="polite"></div>
+    <div class="hint muted">Try: 我喜欢猫 → chat repeatedly → 我喜欢什么宠物？ → 我现在更喜欢狗 · Tools: @calc (6+4)*2, @time</div>
+    <form id="composer"><input id="prompt" type="text" placeholder="Write a message..." maxlength="4000" required /><button id="send" type="submit">Send</button></form>
+    <div id="metrics" class="footnote muted"></div>
+  </section>
+  <p class="footnote muted">Offline demo mode is a rule-based test double, not an actual LLM. Persistent memory requires explicit opt-in. Prototype only: no real identity authentication, rate limits or production privacy guarantees.</p>
+</main>
+<script>
+(() => {
+  const el = id => document.getElementById(id);
+  const messages = el('messages');
+  const user = () => el('user').value.trim();
+  const headers = () => ({'Content-Type': 'application/json', ...(el('apikey').value ? {'X-API-Key': el('apikey').value} : {})});
+  const valid = () => /^[A-Za-z0-9_-]{1,64}$/.test(user()) && /^[A-Za-z0-9_-]{1,64}$/.test(el('thread').value.trim());
+  const add = (who, value) => {
+    const node = document.createElement('div');
+    node.className = 'message ' + who;
+    node.textContent = value;
+    messages.append(node);
+    messages.scrollTop = messages.scrollHeight;
+    return node;
+  };
+  el('consent').addEventListener('change', async (event) => {
+    if (!valid()) { alert('Invalid user/thread ID'); event.target.checked = false; return; }
+    const res = await fetch(`/v1/users/${encodeURIComponent(user())}/consent`, {method:'PUT', headers:headers(), body:JSON.stringify({enabled:event.target.checked})});
+    if (!res.ok) { alert('Cannot change consent: ' + res.status); event.target.checked = !event.target.checked; }
+  });
+  el('showMemory').addEventListener('click', async () => {
+    if (!valid()) return alert('Invalid user/thread ID');
+    const res = await fetch(`/v1/users/${encodeURIComponent(user())}/memories`, {headers:headers()});
+    add('assistant', res.ok ? 'Stored memories: ' + JSON.stringify(await res.json(), null, 2) : `HTTP ${res.status}`);
+  });
+  el('erase').addEventListener('click', async () => {
+    if (!valid() || !confirm('Delete this user and all of their messages and memories?')) return;
+    const res = await fetch(`/v1/users/${encodeURIComponent(user())}`, {method:'DELETE', headers:headers()});
+    if (res.ok) { messages.replaceChildren(); el('consent').checked = false; add('assistant', 'User data deleted.'); }
+    else add('assistant', `Delete failed: HTTP ${res.status}`);
+  });
+  el('composer').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (!valid()) return alert('Invalid user/thread ID');
+    const msg = el('prompt').value.trim();
+    if (!msg) return;
+    el('prompt').value = '';
+    el('send').disabled = true;
+    add('user', msg);
+    const bubble = add('assistant', '');
+    try {
+      const res = await fetch('/v1/chat/stream', {method:'POST', headers:headers(), body:JSON.stringify({user_id:user(), thread_id:el('thread').value.trim(), message:msg, memory_mode:el('mode').value})});
+      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      while (true) {
+        const {value, done} = await reader.read();
+        buffer += decoder.decode(value || new Uint8Array(), {stream:!done}).replace(/\r\n/g, '\n');
+        const parts = buffer.split('\n\n'); buffer = parts.pop() || '';
+        for (const part of parts) {
+          const kind = part.split('\n').find(line => line.startsWith('event: '))?.slice(7);
+          const data = part.split('\n').find(line => line.startsWith('data: '))?.slice(6);
+          if (!data) continue;
+          const obj = JSON.parse(data);
+          if (kind === 'delta') bubble.textContent += obj.text;
+          if (kind === 'done') el('metrics').textContent = JSON.stringify(obj.metrics);
+          if (kind === 'error') bubble.textContent = obj.message;
+          messages.scrollTop = messages.scrollHeight;
+        }
+        if (done) break;
+      }
+    } catch (err) { bubble.textContent = 'Request failed: ' + err.message; }
+    finally { el('send').disabled = false; el('prompt').focus(); }
+  });
+  fetch('/healthz').then(r => r.json()).then(j => { el('backend').textContent = j.backend === 'demo' ? 'Offline demo model' : 'Live LLM backend'; });
+})();
+</script>
+</body>
+</html>
